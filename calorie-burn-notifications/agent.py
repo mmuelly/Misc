@@ -11,13 +11,27 @@ import os
 import time
 from datetime import date, datetime
 from pathlib import Path
+from typing import Optional
 
 import anthropic
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+# Lazily imported when STATE_BUCKET is set
+_gcs_client = None
+_gcs_bucket = None
+
+
+def _get_gcs_bucket():
+    global _gcs_client, _gcs_bucket
+    if _gcs_bucket is None:
+        from google.cloud import storage  # noqa: PLC0415
+        _gcs_client = storage.Client()
+        _gcs_bucket = _gcs_client.bucket(os.environ["STATE_BUCKET"])
+    return _gcs_bucket
 
 # ---------------------------------------------------------------------------
 # Configuration (override via environment variables or config.json)
@@ -30,9 +44,12 @@ DEFAULTS = {
     "ntfy_topic": "",             # your ntfy topic (e.g. "my-calorie-alerts-abc123")
     "ntfy_server": "https://ntfy.sh",
     "anthropic_api_key": "",      # or set ANTHROPIC_API_KEY env var
-    "state_file": "state.json",   # persists daily totals across restarts
+    "state_file": "state.json",   # persists daily totals across restarts (local mode)
     "port": 8765,
     "log_level": "INFO",
+    # Cloud Run / GCS settings (set automatically by deploy.sh)
+    "state_bucket": "",           # GCS bucket name; if set, overrides state_file
+    "agent_api_key": "",          # Bearer token the iOS Shortcut must send
 }
 
 
@@ -48,6 +65,13 @@ def load_config() -> dict:
             cfg[key] = int(env_val) if isinstance(cfg[key], int) else env_val
     if not cfg["anthropic_api_key"]:
         cfg["anthropic_api_key"] = os.environ.get("ANTHROPIC_API_KEY", "")
+    # Cloud Run injects PORT; takes precedence over config
+    if "PORT" in os.environ:
+        cfg["port"] = int(os.environ["PORT"])
+    if not cfg["state_bucket"]:
+        cfg["state_bucket"] = os.environ.get("STATE_BUCKET", "")
+    if not cfg["agent_api_key"]:
+        cfg["agent_api_key"] = os.environ.get("AGENT_API_KEY", "")
     return cfg
 
 
@@ -61,24 +85,64 @@ log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # State persistence (daily reset)
+# Backends: local file (default) or GCS (when STATE_BUCKET is set)
 # ---------------------------------------------------------------------------
 
+_FRESH_STATE = lambda: {"date": str(date.today()), "total_burned": 0.0, "beers_earned": 0}
+_GCS_STATE_BLOB = "agent-state.json"
 STATE_PATH = Path(__file__).parent / CONFIG["state_file"]
 
 
 def load_state() -> dict:
+    if CONFIG["state_bucket"]:
+        return _load_state_gcs()
+    return _load_state_local()
+
+
+def save_state(state: dict) -> None:
+    if CONFIG["state_bucket"]:
+        _save_state_gcs(state)
+    else:
+        _save_state_local(state)
+
+
+# --- local backend ---
+
+def _load_state_local() -> dict:
     if STATE_PATH.exists():
         with open(STATE_PATH) as f:
             state = json.load(f)
         if state.get("date") == str(date.today()):
             return state
-    # New day → fresh slate
-    return {"date": str(date.today()), "total_burned": 0.0, "beers_earned": 0}
+    return _FRESH_STATE()
 
 
-def save_state(state: dict) -> None:
+def _save_state_local(state: dict) -> None:
     with open(STATE_PATH, "w") as f:
         json.dump(state, f)
+
+
+# --- GCS backend ---
+
+def _load_state_gcs() -> dict:
+    try:
+        blob = _get_gcs_bucket().blob(_GCS_STATE_BLOB)
+        if not blob.exists():
+            return _FRESH_STATE()
+        data = json.loads(blob.download_as_text())
+        if data.get("date") == str(date.today()):
+            return data
+    except Exception as e:
+        log.warning("GCS load_state error: %s — starting fresh", e)
+    return _FRESH_STATE()
+
+
+def _save_state_gcs(state: dict) -> None:
+    try:
+        blob = _get_gcs_bucket().blob(_GCS_STATE_BLOB)
+        blob.upload_from_string(json.dumps(state), content_type="application/json")
+    except Exception as e:
+        log.error("GCS save_state error: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +216,20 @@ class HealthPayload(BaseModel):
     timestamp: str | None = None  # ISO-8601, optional
 
 
+def _check_api_key(authorization: Optional[str]) -> None:
+    """Raise 401 if AGENT_API_KEY is configured and the request doesn't match."""
+    required = CONFIG["agent_api_key"]
+    if not required:
+        return
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    if authorization.removeprefix("Bearer ") != required:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
 @app.post("/health-update")
-async def health_update(payload: HealthPayload):
+async def health_update(payload: HealthPayload, authorization: Optional[str] = Header(default=None)):
+    _check_api_key(authorization)
     state = load_state()
     ipa_cal = int(CONFIG["ipa_calories"])
 

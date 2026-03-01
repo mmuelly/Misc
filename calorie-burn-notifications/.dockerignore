@@ -1,0 +1,6 @@
+state.json
+*.pyc
+__pycache__
+.env
+SETUP.md
+deploy.sh
