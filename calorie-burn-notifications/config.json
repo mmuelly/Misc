@@ -1,0 +1,9 @@
+{
+  "ipa_calories": 280,
+  "ntfy_topic": "your-unique-topic-here",
+  "ntfy_server": "https://ntfy.sh",
+  "anthropic_api_key": "",
+  "state_file": "state.json",
+  "port": 8765,
+  "log_level": "INFO"
+}
