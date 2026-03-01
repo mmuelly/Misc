@@ -1,0 +1,342 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GitLab CI/CD — Calorie Burn Notification Agent
+#
+# Stages:   lint → test → build → deploy
+#
+# Required CI/CD Variables (Settings → CI/CD → Variables):
+#   GCP_PROJECT_ID        GCP project that owns the Cloud Run service
+#   GCP_SA_KEY            base64-encoded JSON key for the deployer service account
+#                         (needs roles: run.admin, storage.admin, secretmanager.admin,
+#                          iam.serviceAccountUser, cloudbuild.builds.editor)
+#   NTFY_TOPIC            ntfy topic for staging push notifications
+#   NTFY_TOPIC_PROD       ntfy topic for production (can equal NTFY_TOPIC)
+#   ANTHROPIC_API_KEY     Anthropic key (masked)
+#   AGENT_API_KEY_STAGING Bearer token for the staging endpoint (masked)
+#   AGENT_API_KEY_PROD    Bearer token for the production endpoint (masked)
+#
+# Optional overrides:
+#   REGION                Cloud Run region (default: us-central1)
+#   IPA_CALORIES          Calories per IPA (default: 280)
+# ─────────────────────────────────────────────────────────────────────────────
+
+stages:
+  - lint
+  - test
+  - build
+  - deploy
+
+# ─── Defaults ────────────────────────────────────────────────────────────────
+
+default:
+  interruptible: true    # newer pipelines on the same branch cancel stale ones
+
+variables:
+  SERVICE_DIR: calorie-burn-notifications
+  SERVICE_NAME: calorie-burn-agent
+  REGION: ${REGION:-us-central1}
+  IPA_CALORIES: "280"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  # GCR image references
+  GCR_IMAGE_SHA: gcr.io/$GCP_PROJECT_ID/$SERVICE_NAME:$CI_COMMIT_SHA
+  GCR_IMAGE_LATEST: gcr.io/$GCP_PROJECT_ID/$SERVICE_NAME:latest
+  GCR_IMAGE_TAG: gcr.io/$GCP_PROJECT_ID/$SERVICE_NAME:$CI_COMMIT_TAG
+
+cache: &pip_cache
+  key: pip-$CI_COMMIT_REF_SLUG
+  paths:
+    - .cache/pip/
+  policy: pull          # jobs pull cache; the test job also pushes it
+
+
+# ─── Templates ───────────────────────────────────────────────────────────────
+
+.python-base:
+  image: python:3.12-slim
+  cache:
+    <<: *pip_cache
+
+.gcloud-base:
+  image: google/cloud-sdk:slim
+  before_script:
+    - echo "$GCP_SA_KEY" | base64 -d > /tmp/sa.json
+    - gcloud auth activate-service-account --key-file=/tmp/sa.json
+    - gcloud config set project "$GCP_PROJECT_ID"
+    - rm -f /tmp/sa.json   # don't leave the key on disk
+
+.only-service-changes: &only_service_changes
+  rules:
+    - changes:
+        - calorie-burn-notifications/**/*
+        - .gitlab-ci.yml
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+
+# ─── Lint ─────────────────────────────────────────────────────────────────────
+
+ruff-check:
+  extends: .python-base
+  stage: lint
+  before_script:
+    - pip install --quiet ruff
+  script:
+    - ruff check $SERVICE_DIR/
+    - ruff format --check $SERVICE_DIR/
+  <<: *only_service_changes
+
+mypy:
+  extends: .python-base
+  stage: lint
+  before_script:
+    - pip install --quiet -r $SERVICE_DIR/requirements.txt mypy
+  script:
+    - cd $SERVICE_DIR && mypy agent.py --ignore-missing-imports --no-error-summary
+  <<: *only_service_changes
+
+dockerfile-lint:
+  image: hadolint/hadolint:latest-alpine
+  stage: lint
+  script:
+    - hadolint $SERVICE_DIR/Dockerfile
+  allow_failure: true   # informational; failures here don't block the pipeline
+  <<: *only_service_changes
+
+
+# ─── Test ─────────────────────────────────────────────────────────────────────
+
+unit-tests:
+  extends: .python-base
+  stage: test
+  cache:
+    <<: *pip_cache
+    policy: pull-push    # this job refreshes the pip cache
+  before_script:
+    - pip install --quiet
+        -r $SERVICE_DIR/requirements.txt
+        pytest
+        pytest-asyncio
+        pytest-cov
+  script:
+    - cd $SERVICE_DIR
+    - >
+      pytest tests/
+      --cov=agent
+      --cov-report=xml:coverage.xml
+      --cov-report=term-missing
+      --cov-fail-under=80
+      --junitxml=junit.xml
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    when: always
+    reports:
+      junit: $SERVICE_DIR/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: $SERVICE_DIR/coverage.xml
+    paths:
+      - $SERVICE_DIR/coverage.xml
+    expire_in: 2 weeks
+  <<: *only_service_changes
+
+docker-build-verify:
+  # Verify the Dockerfile builds without errors on MRs and Dockerfile changes.
+  # Does NOT push — just ensures the image is buildable.
+  stage: test
+  image: docker:27-cli
+  services:
+    - name: docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_BUILDKIT: "1"
+  script:
+    - docker build --no-cache --tag $SERVICE_NAME:verify $SERVICE_DIR/
+    - docker inspect $SERVICE_NAME:verify --format "Image size{{':'}} {{.Size}} bytes"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - changes:
+        - calorie-burn-notifications/Dockerfile
+        - calorie-burn-notifications/requirements.txt
+
+
+# ─── Build ────────────────────────────────────────────────────────────────────
+
+build-and-push:
+  stage: build
+  image: docker:27-cli
+  services:
+    - name: docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_BUILDKIT: "1"
+  before_script:
+    - echo "$GCP_SA_KEY" | base64 -d | docker login -u _json_key --password-stdin https://gcr.io
+  script:
+    - docker build
+        --tag $GCR_IMAGE_SHA
+        --tag $GCR_IMAGE_LATEST
+        --cache-from $GCR_IMAGE_LATEST
+        --build-arg BUILDKIT_INLINE_CACHE=1
+        $SERVICE_DIR/
+    - docker push $GCR_IMAGE_SHA
+    - docker push $GCR_IMAGE_LATEST
+    - echo "IMAGE=$GCR_IMAGE_SHA" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+
+# ─── Deploy — Staging ─────────────────────────────────────────────────────────
+
+deploy-staging:
+  extends: .gcloud-base
+  stage: deploy
+  needs:
+    - job: build-and-push
+      artifacts: true
+    - job: unit-tests
+  variables:
+    STAGING_SERVICE: $SERVICE_NAME-staging
+    STATE_BUCKET: $GCP_PROJECT_ID-$SERVICE_NAME-staging-state
+  environment:
+    name: staging
+    # URL will be set dynamically via STAGING_URL artifact
+  script:
+    # Ensure the state bucket exists (idempotent)
+    - |
+      if ! gcloud storage buckets describe gs://$STATE_BUCKET --project $GCP_PROJECT_ID &>/dev/null 2>&1; then
+        gcloud storage buckets create gs://$STATE_BUCKET \
+          --location $REGION --uniform-bucket-level-access --project $GCP_PROJECT_ID
+      fi
+    # Deploy
+    - |
+      gcloud run deploy $STAGING_SERVICE \
+        --image "$IMAGE" \
+        --region "$REGION" \
+        --project "$GCP_PROJECT_ID" \
+        --allow-unauthenticated \
+        --memory 256Mi \
+        --cpu 1 \
+        --min-instances 0 \
+        --max-instances 2 \
+        --set-env-vars "STATE_BUCKET=${STATE_BUCKET},IPA_CALORIES=${IPA_CALORIES}" \
+        --set-secrets "ANTHROPIC_API_KEY=calorie-agent-anthropic-key:latest,\
+NTFY_TOPIC=calorie-agent-ntfy-topic-staging:latest,\
+AGENT_API_KEY=calorie-agent-api-key-staging:latest" \
+        --quiet
+    # Export the service URL for downstream jobs
+    - |
+      STAGING_URL=$(gcloud run services describe $STAGING_SERVICE \
+        --region $REGION --project $GCP_PROJECT_ID \
+        --format 'value(status.url)')
+      echo "STAGING_URL=$STAGING_URL" >> deploy-staging.env
+      echo "Staging deployed to: $STAGING_URL"
+  artifacts:
+    reports:
+      dotenv: deploy-staging.env
+    expire_in: 1 day
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+
+smoke-test-staging:
+  extends: .python-base
+  stage: deploy
+  needs:
+    - job: deploy-staging
+      artifacts: true
+  before_script:
+    - pip install --quiet httpx
+  script:
+    - |
+      python3 - <<'PYEOF'
+      import httpx, os, sys, time
+
+      base = os.environ["STAGING_URL"].rstrip("/")
+      api_key = os.environ.get("AGENT_API_KEY_STAGING", "")
+      headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+      # 1. Root endpoint
+      r = httpx.get(base + "/", timeout=15)
+      assert r.status_code == 200, f"GET / failed: {r.status_code}"
+      assert "message" in r.json(), f"GET / missing 'message': {r.json()}"
+      print("✓ GET /")
+
+      # 2. Status endpoint
+      r = httpx.get(base + "/status", timeout=15)
+      assert r.status_code == 200, f"GET /status failed: {r.status_code}"
+      data = r.json()
+      for field in ("total_burned_today", "beers_earned_today", "calories_until_next_beer"):
+          assert field in data, f"Missing field '{field}' in /status: {data}"
+      print(f"✓ GET /status — burned={data['total_burned_today']} beers={data['beers_earned_today']}")
+
+      # 3. Health update (no threshold)
+      r = httpx.post(base + "/health-update",
+                     json={"active_calories": 0.0},
+                     headers=headers, timeout=15)
+      assert r.status_code == 200, f"POST /health-update failed: {r.status_code} {r.text}"
+      assert r.json()["status"] in ("ok", "ignored", "notification_sent")
+      print(f"✓ POST /health-update — {r.json()['status']}")
+
+      # 4. Auth check (if key is configured)
+      if api_key:
+          r = httpx.post(base + "/health-update", json={"active_calories": 0.0}, timeout=15)
+          assert r.status_code == 401, f"Expected 401 without auth, got {r.status_code}"
+          print("✓ 401 returned when Authorization header is missing")
+
+      print("\nAll smoke tests passed.")
+      PYEOF
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+
+# ─── Deploy — Production ──────────────────────────────────────────────────────
+
+deploy-production:
+  extends: .gcloud-base
+  stage: deploy
+  needs:
+    - job: build-and-push
+      artifacts: true
+    - job: unit-tests
+  variables:
+    STATE_BUCKET: $GCP_PROJECT_ID-$SERVICE_NAME-state
+  environment:
+    name: production
+  script:
+    # Ensure the state bucket exists (idempotent)
+    - |
+      if ! gcloud storage buckets describe gs://$STATE_BUCKET --project $GCP_PROJECT_ID &>/dev/null 2>&1; then
+        gcloud storage buckets create gs://$STATE_BUCKET \
+          --location $REGION --uniform-bucket-level-access --project $GCP_PROJECT_ID
+      fi
+    # For tagged releases, use the SHA image that matches this tag's commit
+    - |
+      gcloud run deploy $SERVICE_NAME \
+        --image "$IMAGE" \
+        --region "$REGION" \
+        --project "$GCP_PROJECT_ID" \
+        --allow-unauthenticated \
+        --memory 256Mi \
+        --cpu 1 \
+        --min-instances 0 \
+        --max-instances 3 \
+        --set-env-vars "STATE_BUCKET=${STATE_BUCKET},IPA_CALORIES=${IPA_CALORIES}" \
+        --set-secrets "ANTHROPIC_API_KEY=calorie-agent-anthropic-key:latest,\
+NTFY_TOPIC=calorie-agent-ntfy-topic:latest,\
+AGENT_API_KEY=calorie-agent-api-key:latest" \
+        --quiet
+    - |
+      PROD_URL=$(gcloud run services describe $SERVICE_NAME \
+        --region $REGION --project $GCP_PROJECT_ID \
+        --format 'value(status.url)')
+      echo "Production deployed to: $PROD_URL"
+  when: manual       # always require a human to promote to production
+  rules:
+    - if: $CI_COMMIT_TAG

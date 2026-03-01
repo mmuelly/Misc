@@ -1,0 +1,45 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "A", "C4", "RUF"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "B006",   # mutable default argument (used intentionally in lambdas)
+    "RUF012", # mutable class attributes
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",  # use of assert in tests is fine
+    "S105",  # hardcoded passwords in test fixtures are fine
+]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_ignores = true
+# google-cloud-storage and anthropic stubs may be absent in CI; that's OK
+[[tool.mypy.overrides]]
+module = ["google.*", "anthropic.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+log_cli = true
+log_cli_level = "WARNING"
+
+[tool.coverage.run]
+source = ["agent"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
