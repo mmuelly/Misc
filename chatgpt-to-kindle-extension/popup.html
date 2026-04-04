@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 340px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 16px;
+      margin-bottom: 12px;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h1 .logo { font-size: 20px; }
+    .settings {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      color: #aaa;
+      margin-bottom: 4px;
+    }
+    input[type="email"], input[type="text"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: #16213e;
+      color: #e0e0e0;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    input:focus {
+      outline: none;
+      border-color: #e94560;
+    }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-save {
+      background: #0f3460;
+      color: #e0e0e0;
+      margin-bottom: 6px;
+    }
+    .btn-save:hover { background: #1a4a7a; }
+    .btn-send {
+      background: #e94560;
+      color: #fff;
+    }
+    .btn-send:hover { background: #c73650; }
+    .btn-send:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    #status {
+      margin-top: 10px;
+      font-size: 12px;
+      text-align: center;
+      min-height: 18px;
+    }
+    .status-ok { color: #4ecca3; }
+    .status-err { color: #e94560; }
+    .status-info { color: #aaa; }
+    .help {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #777;
+      line-height: 1.5;
+    }
+    .help a { color: #e94560; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1><span class="logo">&#128214;</span> Chat to Kindle</h1>
+
+  <div class="settings">
+    <label>Kindle Email Address</label>
+    <input type="email" id="kindleEmail" placeholder="yourname@kindle.com">
+
+    <label>Your Sender Email (approved in Kindle settings)</label>
+    <input type="email" id="senderEmail" placeholder="you@gmail.com">
+
+    <label>SMTP Server (e.g. smtp.gmail.com)</label>
+    <input type="text" id="smtpHost" placeholder="smtp.gmail.com">
+
+    <label>SMTP Port</label>
+    <input type="text" id="smtpPort" placeholder="465">
+
+    <label>SMTP Password / App Password</label>
+    <input type="text" id="smtpPass" placeholder="your app password">
+
+    <button class="btn btn-save" id="saveBtn">Save Settings</button>
+  </div>
+
+  <button class="btn btn-send" id="sendBtn">Extract & Send to Kindle</button>
+
+  <div id="status"></div>
+
+  <div class="help">
+    <strong>Setup:</strong> Add your sender email to
+    <a href="https://www.amazon.com/hz/mycd/myx#/home/settings/payment" target="_blank">
+      Amazon Kindle approved senders</a>.
+    Use a Gmail <a href="https://myaccount.google.com/apppasswords" target="_blank">App Password</a> for SMTP auth.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

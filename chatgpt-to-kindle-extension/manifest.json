@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Chat to Kindle",
+  "version": "1.0",
+  "description": "Extract conversations from ChatGPT or Claude and send to Kindle as a document.",
+  "permissions": ["activeTab", "storage", "scripting", "downloads"],
+  "icons": {
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*"
+      ],
+      "js": ["content.js"]
+    }
+  ]
+}
