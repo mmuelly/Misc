@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine
-from app.routers import auth, families, polls, votes
+from app.routers import auth, families, polls, suggestions, votes
 from app.tasks.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -54,6 +54,7 @@ app.include_router(auth.router)
 app.include_router(families.router)
 app.include_router(polls.router)
 app.include_router(votes.router)
+app.include_router(suggestions.router)
 
 
 @app.get("/health")

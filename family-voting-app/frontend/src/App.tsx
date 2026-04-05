@@ -8,6 +8,7 @@ import DashboardPage from "./pages/DashboardPage";
 import PollDetailPage from "./pages/PollDetailPage";
 import CreatePollPage from "./pages/CreatePollPage";
 import FamilySettingsPage from "./pages/FamilySettingsPage";
+import SuggestionsPage from "./pages/SuggestionsPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import type { ReactNode } from "react";
 
@@ -71,6 +72,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <CreatePollPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/suggestions"
+        element={
+          <ProtectedRoute>
+            <SuggestionsPage />
           </ProtectedRoute>
         }
       />

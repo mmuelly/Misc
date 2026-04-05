@@ -1,11 +1,21 @@
 import { useParams, useNavigate, Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import PageShell from "../components/layout/PageShell";
 import VoteResults from "../components/polls/VoteResults";
 import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import Badge from "../components/ui/Badge";
+import Avatar from "../components/ui/Avatar";
 import Modal from "../components/ui/Modal";
 import { usePoll, useDeletePoll, usePollHistory } from "../hooks/usePolls";
+import {
+  useSuggestions,
+  useSuggestOption,
+  useResolveSuggestion,
+  useDeleteSuggestion,
+} from "../hooks/useSuggestions";
+import { getFamily } from "../api/families";
+import { useAuth } from "../hooks/useAuth";
 import { getDayName, formatDate } from "../utils/date";
 import { useState } from "react";
 import type { HistoryEntry } from "../types";
@@ -105,14 +115,97 @@ function HistoryAccordion({ history }: { history: HistoryEntry[] }) {
   );
 }
 
+function timeAgo(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const seconds = Math.floor((now - then) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 export default function PollDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user, familyId } = useAuth();
   const pollId = id ? Number(id) : undefined;
   const { data: poll, isLoading } = usePoll(pollId);
   const { data: history } = usePollHistory(pollId);
   const deletePoll = useDeletePoll();
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+
+  const [optionLabel, setOptionLabel] = useState("");
+  const [suggestionFeedback, setSuggestionFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  const { data: allSuggestions } = useSuggestions(familyId, "pending");
+  const pollOptionSuggestions = allSuggestions?.filter(
+    (s) => s.suggestion_type === "option" && s.poll_id === pollId
+  );
+
+  const suggestOptionMutation = useSuggestOption();
+  const resolveMutation = useResolveSuggestion();
+  const deleteSuggestionMutation = useDeleteSuggestion();
+
+  const { data: family } = useQuery({
+    queryKey: ["family", familyId],
+    queryFn: () => getFamily(familyId!),
+    enabled: !!familyId,
+  });
+
+  const currentMember = family?.members?.find((m) => m.user_id === user?.id);
+  const isAdmin = currentMember?.role === "admin";
+
+  const showSuggestionFeedback = (type: "success" | "error", message: string) => {
+    setSuggestionFeedback({ type, message });
+    setTimeout(() => setSuggestionFeedback(null), 3000);
+  };
+
+  const handleSuggestOption = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!familyId || !pollId || !optionLabel.trim()) return;
+    try {
+      await suggestOptionMutation.mutateAsync({
+        family_id: familyId,
+        poll_id: pollId,
+        option_label: optionLabel.trim(),
+      });
+      setOptionLabel("");
+      showSuggestionFeedback("success", "Option suggestion submitted!");
+    } catch {
+      showSuggestionFeedback("error", "Failed to submit suggestion.");
+    }
+  };
+
+  const handleResolveSuggestion = async (
+    suggestionId: number,
+    action: "approve" | "reject"
+  ) => {
+    try {
+      await resolveMutation.mutateAsync({ id: suggestionId, action });
+      showSuggestionFeedback(
+        "success",
+        action === "approve" ? "Suggestion approved!" : "Suggestion rejected."
+      );
+    } catch {
+      showSuggestionFeedback("error", "Failed to resolve suggestion.");
+    }
+  };
+
+  const handleDeleteSuggestion = async (suggestionId: number) => {
+    try {
+      await deleteSuggestionMutation.mutateAsync(suggestionId);
+      showSuggestionFeedback("success", "Suggestion deleted.");
+    } catch {
+      showSuggestionFeedback("error", "Failed to delete suggestion.");
+    }
+  };
 
   const handleDelete = async () => {
     if (!pollId) return;
@@ -220,6 +313,122 @@ export default function PollDetailPage() {
             </Card>
           </div>
         )}
+
+        <div className="mb-8">
+          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">
+            Suggest an Option
+          </h2>
+
+          {suggestionFeedback && (
+            <div
+              className={`mb-4 px-4 py-3 rounded-lg text-sm font-medium ${
+                suggestionFeedback.type === "success"
+                  ? "bg-green-50 text-green-700 border border-green-200"
+                  : "bg-red-50 text-red-700 border border-red-200"
+              }`}
+            >
+              {suggestionFeedback.message}
+            </div>
+          )}
+
+          <Card className="mb-4">
+            <form onSubmit={handleSuggestOption} className="flex gap-3">
+              <input
+                type="text"
+                value={optionLabel}
+                onChange={(e) => setOptionLabel(e.target.value)}
+                placeholder="Suggest a new option..."
+                className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                loading={suggestOptionMutation.isPending}
+                disabled={!optionLabel.trim()}
+              >
+                Suggest
+              </Button>
+            </form>
+          </Card>
+
+          {pollOptionSuggestions && pollOptionSuggestions.length > 0 && (
+            <div className="space-y-2">
+              {pollOptionSuggestions.map((suggestion) => (
+                <Card key={suggestion.id} className="p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 shrink-0">
+                        Option
+                      </span>
+                      <span className="text-sm font-medium text-gray-900 truncate">
+                        {suggestion.option_label}
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <Avatar
+                          src={suggestion.suggester_avatar}
+                          name={suggestion.suggester_name}
+                          size="sm"
+                        />
+                        <span className="text-xs text-gray-500">
+                          {suggestion.suggester_name}
+                        </span>
+                      </div>
+                      <span className="text-xs text-gray-400 shrink-0">
+                        {timeAgo(suggestion.created_at)}
+                      </span>
+                    </div>
+                    <div className="flex gap-1.5 shrink-0">
+                      {isAdmin && (
+                        <>
+                          <Button
+                            size="sm"
+                            onClick={() =>
+                              handleResolveSuggestion(suggestion.id, "approve")
+                            }
+                            disabled={
+                              resolveMutation.isPending ||
+                              deleteSuggestionMutation.isPending
+                            }
+                          >
+                            Approve
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() =>
+                              handleResolveSuggestion(suggestion.id, "reject")
+                            }
+                            disabled={
+                              resolveMutation.isPending ||
+                              deleteSuggestionMutation.isPending
+                            }
+                          >
+                            Reject
+                          </Button>
+                        </>
+                      )}
+                      {suggestion.suggested_by === user?.id && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() =>
+                            handleDeleteSuggestion(suggestion.id)
+                          }
+                          disabled={
+                            resolveMutation.isPending ||
+                            deleteSuggestionMutation.isPending
+                          }
+                        >
+                          Delete
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="flex items-center gap-3 pt-4 border-t border-gray-100">
           <Button

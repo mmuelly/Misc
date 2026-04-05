@@ -6,6 +6,7 @@ import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import { useAuth } from "../hooks/useAuth";
 import { usePolls } from "../hooks/usePolls";
+import { useSuggestions } from "../hooks/useSuggestions";
 import { createFamily, joinFamily, getFamily } from "../api/families";
 import { useQuery } from "@tanstack/react-query";
 
@@ -161,6 +162,8 @@ export default function DashboardPage() {
   const [copied, setCopied] = useState(false);
 
   const { data: polls, isLoading: pollsLoading } = usePolls(familyId);
+  const { data: pendingSuggestions } = useSuggestions(familyId, "pending");
+  const pendingCount = pendingSuggestions?.length ?? 0;
   const { data: family } = useQuery({
     queryKey: ["family", familyId],
     queryFn: () => getFamily(familyId!),
@@ -217,9 +220,19 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
-        <Button onClick={() => navigate("/polls/new")}>
-          + New Poll
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => navigate("/suggestions")}>
+            Suggestions
+            {pendingCount > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center h-5 min-w-[1.25rem] px-1 rounded-full bg-red-500 text-white text-xs font-medium">
+                {pendingCount}
+              </span>
+            )}
+          </Button>
+          <Button onClick={() => navigate("/polls/new")}>
+            + New Poll
+          </Button>
+        </div>
       </div>
 
       <div className="flex gap-1 mb-6 bg-white rounded-lg p-1 shadow-sm w-fit">

@@ -94,3 +94,35 @@ export interface UpdatePollPayload {
   reset_time?: string;
   reset_timezone?: string;
 }
+
+export interface Suggestion {
+  id: number;
+  family_id: number;
+  suggested_by: number;
+  suggester_name: string;
+  suggester_avatar: string | null;
+  suggestion_type: "poll" | "option";
+  title: string | null;
+  category: string | null;
+  description: string | null;
+  poll_id: number | null;
+  poll_title: string | null;
+  option_label: string | null;
+  status: "pending" | "approved" | "rejected";
+  resolved_by: number | null;
+  resolver_name: string | null;
+  created_at: string;
+}
+
+export interface SuggestPollPayload {
+  family_id: number;
+  title: string;
+  category?: string;
+  description?: string;
+}
+
+export interface SuggestOptionPayload {
+  family_id: number;
+  poll_id: number;
+  option_label: string;
+}
