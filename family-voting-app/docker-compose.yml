@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: familyvote
+      POSTGRES_USER: familyvote
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U familyvote"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://familyvote:${DB_PASSWORD:-changeme}@db:5432/familyvote
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-noreply@familyvote.local}
+      MAIL_SERVER: ${MAIL_SERVER:-localhost}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  pgdata:
